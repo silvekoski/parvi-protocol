@@ -1,0 +1,20 @@
+[package]
+name = "tacticalmesh-link"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = ["wfb"]
+stub = []
+udp  = []
+wfb  = ["wfb_rs"]
+
+[dependencies]
+blake3      = "1.5"
+socket2     = "0.5"
+parking_lot = { workspace = true }
+anyhow      = { workspace = true }
+tracing     = { workspace = true }
+serde       = { workspace = true }
+bincode     = { workspace = true }
+wfb_rs      = { path = "../kova-wfb-rs", optional = true }

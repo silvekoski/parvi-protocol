@@ -1,0 +1,33 @@
+[package]
+name    = "tacticalmesh-bin"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "tacticalmesh-bin"
+path = "src/main.rs"
+
+[[bin]]
+name = "link-test"
+path = "src/link_test.rs"
+
+[[bin]]
+name = "pcap-sniff"
+path = "src/pcap_sniff.rs"
+
+[dependencies]
+clap               = { workspace = true }
+tokio              = { workspace = true }
+anyhow             = { workspace = true }
+tracing            = { workspace = true }
+tracing-subscriber = { workspace = true }
+parking_lot        = { workspace = true }
+rand               = { workspace = true }
+bincode            = { workspace = true }
+
+pcap               = "2.4"
+libc               = "0.2"
+tacticalmesh-link  = { path = "../tacticalmesh-link" }
+tacticalmesh-wire  = { path = "../tacticalmesh-wire" }
+tacticalmesh-olsr  = { path = "../tacticalmesh-olsr" }
+tacticalmesh-app   = { path = "../tacticalmesh-app" }
