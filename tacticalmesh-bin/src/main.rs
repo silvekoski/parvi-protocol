@@ -34,6 +34,11 @@ struct Cli {
     iface: String,
     #[arg(long)]
     psk_file: Option<PathBuf>,
+    /// Image to serve in response to RequestImage.
+    /// Accepts raw 640×480 greyscale (307200 bytes) or a JPEG file.
+    /// Omit to use the built-in test pattern.
+    #[arg(long)]
+    image_file: Option<PathBuf>,
 }
 
 // ── Outbound message from TUI → scheduler ────────────────────────────────────
@@ -51,6 +56,8 @@ pub struct Shared {
     pub app:          Arc<RwLock<AppState>>,
     pub target_board: Arc<RwLock<TargetBoard>>,
     pub image_cache:  Arc<Mutex<ImageCache>>,
+    /// Greyscale pixels + dimensions this node will serve on RequestImage.
+    pub local_image:  Arc<Mutex<Option<(Vec<u8>, u32, u32)>>>,
     pub nonce_cache:  Arc<NonceCache>,
     pub identity:     Arc<Identity>,
     pub pubkeys:      Arc<PubkeyStore>,
@@ -97,11 +104,30 @@ async fn main() -> anyhow::Result<()> {
     let link = Arc::new(LinkAdapter::new(&cli.iface, cli.node_id, psk)?);
     let scheduler = Arc::new(TxScheduler::new(link.clone()));
 
+    let local_image: Option<(Vec<u8>, u32, u32)> = if let Some(ref path) = cli.image_file {
+        let bytes = std::fs::read(path)?;
+        if bytes.len() == 640 * 480 {
+            info!("loaded raw 640×480 greyscale image from {:?}", path);
+            Some((bytes, 640, 480))
+        } else {
+            let (raw, w, h) = tacticalmesh_app::image_codec::decode_jpeg(&bytes)
+                .ok_or_else(|| anyhow::anyhow!(
+                    "--image-file: not a raw 640×480 greyscale file and not a valid JPEG"
+                ))?;
+            info!("loaded JPEG {}×{} image from {:?}", w, h, path);
+            Some((raw, w, h))
+        }
+    } else {
+        info!("no --image-file provided; using built-in test pattern");
+        Some(generate_test_pattern())
+    };
+
     let shared = Arc::new(Shared {
         olsr:         Arc::new(RwLock::new(OlsrState::new(cli.node_id))),
         app:          Arc::new(RwLock::new(AppState::new(cli.node_id))),
         target_board: Arc::new(RwLock::new(TargetBoard::new())),
         image_cache:  Arc::new(Mutex::new(ImageCache::new())),
+        local_image:  Arc::new(Mutex::new(local_image)),
         nonce_cache:  Arc::new(NonceCache::new()),
         identity:     identity.clone(),
         pubkeys,
@@ -151,7 +177,7 @@ async fn main() -> anyhow::Result<()> {
     // RX: one blocking thread per priority → one async handler task per priority.
     {
         let (frame_tx, frame_rx) =
-            tokio::sync::mpsc::channel::<(Vec<u8>, tacticalmesh_link::RxMeta, Priority)>(512);
+            tokio::sync::mpsc::channel::<(Vec<u8>, tacticalmesh_link::RxMeta, Priority)>(2048);
 
         for prio in [
             Priority::Emergency,
@@ -188,4 +214,25 @@ async fn main() -> anyhow::Result<()> {
 
     info!("node {} shutting down", cli.node_id);
     Ok(())
+}
+
+/// 640×480 greyscale test pattern: concentric rings + diagonal gradient.
+fn generate_test_pattern() -> (Vec<u8>, u32, u32) {
+    const W: usize = 640;
+    const H: usize = 480;
+    let cx = W as f32 / 2.0;
+    let cy = H as f32 / 2.0;
+    let max_r = (cx * cx + cy * cy).sqrt();
+
+    let pixels: Vec<u8> = (0..H).flat_map(|y| {
+        (0..W).map(move |x| {
+            let dx = x as f32 - cx;
+            let dy = y as f32 - cy;
+            let r = (dx * dx + dy * dy).sqrt();
+            let ring = ((r / max_r * 8.0) as u8 % 2) * 127;
+            let grad = ((x + y) % 256) as u8;
+            ring.saturating_add(grad / 2)
+        })
+    }).collect();
+    (pixels, W as u32, H as u32)
 }

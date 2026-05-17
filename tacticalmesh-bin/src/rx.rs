@@ -107,26 +107,25 @@ pub async fn rx_loop(
         jam_window.record(prio, now);
 
         // ── Routing decision ──────────────────────────────────────────────────
-        let deliver_local  = dst == local_id || dst == BROADCAST;
-        let rebroadcast    = dst == BROADCAST && parsed.routed.hops_taken < MAX_HOPS;
+        let deliver_local   = dst == local_id || dst == BROADCAST;
+        // Flood broadcast frames with a bounded hop count. This is needed for
+        // target detections and image requests when the requester/provider are
+        // not direct RF neighbors.
+        let rebroadcast     = dst == BROADCAST
+            && parsed.routed.hops_taken < MAX_HOPS;
         let forward_unicast = dst != local_id && dst != BROADCAST;
 
         if rebroadcast {
-            // Rebuild frame with incremented hops_taken.
-            let fwd_routed = tacticalmesh_wire::RoutedHeader {
-                last_hop_id: local_id,
-                hops_taken:  parsed.routed.hops_taken + 1,
-                flags:       parsed.routed.flags,
-                reserved:    0,
-            };
-            // Re-wrap plaintext as wire message and re-sign with our key.
             let wire = tacticalmesh_wire::TacticalMessage {
                 kind:    msg_kind,
                 payload: parsed.plaintext.clone(),
             };
-            // We don't have build_frame_with_routed, so just use build_frame for now.
-            let _ = fwd_routed; // routed header increment tracked conceptually
-            let frame = tacticalmesh_wire::build_frame(&wire, prio, BROADCAST, &shared.identity);
+            let frame = tacticalmesh_wire::build_frame_for_rebroadcast(
+                &wire,
+                prio,
+                &shared.identity,
+                parsed.routed.hops_taken.saturating_add(1),
+            );
             shared.scheduler.enqueue(frame, prio);
         }
 
@@ -190,8 +189,13 @@ pub async fn rx_loop(
 
             MsgKind::Data => {
                 match bincode::deserialize::<AppMsg>(&parsed.plaintext) {
-                    Ok(msg) => handlers::handle_tactical(msg, src, &shared).await,
-                    Err(e)  => warn!("Data deserialize: {e}"),
+                    Ok(msg) => {
+                        let shared2 = shared.clone();
+                        tokio::spawn(async move {
+                            handlers::handle_tactical(msg, src, &shared2).await;
+                        });
+                    }
+                    Err(e) => warn!("Data deserialize: {e}"),
                 }
             }
 

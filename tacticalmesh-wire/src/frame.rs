@@ -45,6 +45,16 @@ pub fn build_frame_for_route(
     build_frame_inner(msg, prio, dst, identity, next_hop, 0)
 }
 
+/// Rebuilds a broadcast frame while preserving/incrementing routed hop count.
+pub fn build_frame_for_rebroadcast(
+    msg: &TacticalMessage,
+    prio: Priority,
+    identity: &Identity,
+    hops_taken: u8,
+) -> Vec<u8> {
+    build_frame_inner(msg, prio, crate::constants::BROADCAST, identity, identity.node_id, hops_taken)
+}
+
 /// Builds all FEC shards for messages > `FEC_THRESHOLD_BYTES`; single frame otherwise.
 /// Each shard uses its own nonce so keystream is never reused across shards.
 pub fn build_frames(
@@ -288,6 +298,18 @@ mod tests {
             .unwrap();
         assert_eq!(parsed.routed.last_hop_id, 3);
         assert_eq!(parsed.auth.dst_node, 7);
+    }
+
+    #[test]
+    fn rebroadcast_frame_preserves_incremented_hops() {
+        let (id, store, cache) = make_env();
+        let msg = TacticalMessage { kind: MsgKind::Data, payload: b"broadcast".to_vec() };
+        let frame = build_frame_for_rebroadcast(&msg, Priority::Bulk, &id, 2);
+        let parsed = parse_and_verify_frame(&frame, &store, &cache, unix_now_ms(), &id.session_key)
+            .unwrap();
+        assert_eq!(parsed.routed.last_hop_id, id.node_id);
+        assert_eq!(parsed.routed.hops_taken, 2);
+        assert_eq!(parsed.auth.dst_node, BROADCAST);
     }
 
     #[test]

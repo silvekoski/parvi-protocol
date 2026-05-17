@@ -16,7 +16,10 @@ pub mod scheduler;
 pub use constants::{BROADCAST, MAX_HOPS};
 pub use errors::FrameError;
 pub use fec::{FEC_THRESHOLD_BYTES, fec_decode, fec_encode};
-pub use frame::{ParsedFrame, build_frame, build_frame_for_route, build_frames, parse_and_verify_frame};
+pub use frame::{
+    ParsedFrame, build_frame, build_frame_for_rebroadcast, build_frame_for_route, build_frames,
+    parse_and_verify_frame,
+};
 pub use headers::{AuthHeader, RoutedHeader};
 pub use identity::Identity;
 pub use message::TacticalMessage;

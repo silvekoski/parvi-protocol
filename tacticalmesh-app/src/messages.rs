@@ -57,6 +57,8 @@ pub struct StateReport {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ImageShard {
     pub target_id: u16,
+    /// How many blocks make up the full image. 0 or 1 = single-block (legacy).
+    pub total_blocks: u8,
     pub block_id: u8,
     pub index: u8,
     pub k: u8,
@@ -95,6 +97,12 @@ pub struct AckPayload {
     pub acked_seq: u64,
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ChatMessage {
+    pub from: u8,
+    pub text: String,
+}
+
 /// Placeholder until tacticalmesh-olsr is wired in
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct OlsrMessage {
@@ -114,6 +122,7 @@ pub enum TacticalMessage {
     Mayday(Mayday),
     Olsr(OlsrMessage),
     Ack(AckPayload),
+    Chat(ChatMessage),
 }
 
 #[cfg(test)]
@@ -201,6 +210,7 @@ mod tests {
     fn roundtrip_image_shard() {
         let msg = TacticalMessage::ImageShard(ImageShard {
             target_id: 10,
+            total_blocks: 0,
             block_id: 0,
             index: 3,
             k: 8,

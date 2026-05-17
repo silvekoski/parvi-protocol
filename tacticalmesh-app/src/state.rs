@@ -38,10 +38,17 @@ pub struct AttackCounters {
     pub spoofed_frames_dropped: u64,
 }
 
-/// Pre-rendered block-char art
 pub struct ImageDisplay {
     pub target_id: u16,
-    pub ascii: String,
+    pub pixels: Vec<u8>,
+    pub width: u32,
+    pub height: u32,
+}
+
+pub struct ImageRxProgress {
+    pub target_id: u16,
+    pub blocks_done: u8,
+    pub blocks_total: u8,
 }
 
 pub struct AppState {
@@ -56,7 +63,10 @@ pub struct AppState {
     pub queues: QueueDepths,
     pub counters: AttackCounters,
     pub image: Option<ImageDisplay>,
+    pub image_rx: Option<ImageRxProgress>,
     pub log: VecDeque<String>,
+    pub input_mode: bool,
+    pub input_buf: String,
 }
 
 impl AppState {
@@ -85,7 +95,10 @@ impl AppState {
                 spoofed_frames_dropped: 0,
             },
             image: None,
+            image_rx: None,
             log: VecDeque::with_capacity(200),
+            input_mode: false,
+            input_buf: String::new(),
         }
     }
 

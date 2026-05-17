@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use anyhow::Context;
 use crossterm::{
-    event::{self, Event, KeyCode},
+    event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
     terminal, ExecutableCommand,
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
@@ -18,7 +18,9 @@ pub struct Tui {
 
 pub enum TuiEvent {
     KeyPress(char),
-    Quit,
+    Enter,
+    Backspace,
+    Escape,
 }
 
 impl Tui {
@@ -45,17 +47,36 @@ impl Tui {
     }
 
     /// Non-blocking event poll (Duration::ZERO).
-    /// - `q` / Esc → `Quit`
-    /// - other chars → `KeyPress(c)`
-    /// - otherwise → `None`
     pub fn next_event(&mut self) -> anyhow::Result<Option<TuiEvent>> {
         if event::poll(Duration::ZERO).context("event poll")? {
             match event::read().context("event read")? {
-                Event::Key(key_event) => match key_event.code {
-                    KeyCode::Char('q') | KeyCode::Esc => return Ok(Some(TuiEvent::Quit)),
-                    KeyCode::Char(c) => return Ok(Some(TuiEvent::KeyPress(c))),
-                    _ => {}
-                },
+                Event::Key(key_event)
+                    if key_event.kind == KeyEventKind::Press
+                        || key_event.kind == KeyEventKind::Repeat =>
+                {
+                    match key_event.code {
+                        KeyCode::Esc => return Ok(Some(TuiEvent::Escape)),
+                        KeyCode::Enter => return Ok(Some(TuiEvent::Enter)),
+                        // Backspace and Delete both delete the previous char.
+                        KeyCode::Backspace | KeyCode::Delete => {
+                            return Ok(Some(TuiEvent::Backspace))
+                        }
+                        KeyCode::Char(c) => {
+                            // Ctrl-C / Ctrl-D → treat as escape
+                            if key_event.modifiers.contains(KeyModifiers::CONTROL)
+                                && (c == 'c' || c == 'd')
+                            {
+                                return Ok(Some(TuiEvent::Escape));
+                            }
+                            // DEL (0x7f) — some terminals send this for Backspace
+                            if c == '\x7f' {
+                                return Ok(Some(TuiEvent::Backspace));
+                            }
+                            return Ok(Some(TuiEvent::KeyPress(c)));
+                        }
+                        _ => {}
+                    }
+                }
                 _ => {}
             }
         }

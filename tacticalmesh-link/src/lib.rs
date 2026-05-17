@@ -35,12 +35,12 @@ mod radio {
     }
     pub struct Tx { pub stream_id: u32 }
     impl Tx {
-        pub fn new(_iface: &str, stream_id: u32) -> anyhow::Result<Self> { Ok(Self { stream_id }) }
+        pub fn new(_iface: &str, stream_id: u32, _port: u16) -> anyhow::Result<Self> { Ok(Self { stream_id }) }
         pub fn send(&self, _data: &[u8], _seq: u32) -> anyhow::Result<()> { Ok(()) }
     }
     pub struct Rx { pub stream_id: u32 }
     impl Rx {
-        pub fn new(_iface: &str, stream_id: u32) -> anyhow::Result<Self> { Ok(Self { stream_id }) }
+        pub fn new(_iface: &str, stream_id: u32, _port: u16) -> anyhow::Result<Self> { Ok(Self { stream_id }) }
         pub fn recv_timeout(&mut self, timeout: Duration) -> anyhow::Result<Option<RxFrame>> {
             std::thread::sleep(timeout);
             Ok(None)
@@ -57,7 +57,6 @@ mod radio {
     use std::time::{Duration, Instant};
     use socket2::{Domain, Protocol, Socket, Type};
 
-    const BASE_PORT: u16 = 42800;
     const MAX_UDP: usize = 65507;
 
     pub struct RxFrame {
@@ -74,8 +73,7 @@ mod radio {
         seq: u32,
     }
     impl Tx {
-        pub fn new(_iface: &str, stream_id: u32) -> anyhow::Result<Self> {
-            let port = BASE_PORT + (stream_id & 0x3) as u16;
+        pub fn new(_iface: &str, stream_id: u32, port: u16) -> anyhow::Result<Self> {
             let sock = UdpSocket::bind("0.0.0.0:0")?;
             sock.set_broadcast(true)?;
             let bcast: SocketAddr = format!("255.255.255.255:{port}").parse().unwrap();
@@ -97,11 +95,14 @@ mod radio {
         sock: UdpSocket,
     }
     impl Rx {
-        pub fn new(_iface: &str, stream_id: u32) -> anyhow::Result<Self> {
-            let port = BASE_PORT + (stream_id & 0x3) as u16;
-            // SO_REUSEADDR lets multiple nodes on the same host share the same port.
+        pub fn new(_iface: &str, stream_id: u32, port: u16) -> anyhow::Result<Self> {
+            // SO_REUSEPORT ensures every socket on this port gets a copy of each
+            // broadcast packet — required when multiple nodes share the same host.
+            // Each priority MUST have a dedicated port so SO_REUSEPORT load-balancing
+            // doesn't scatter datagrams across the wrong priority's Rx sockets.
             let s = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
             s.set_reuse_address(true)?;
+            s.set_reuse_port(true)?;
             s.set_broadcast(true)?;
             s.set_nonblocking(true)?;
             s.bind(&format!("0.0.0.0:{port}").parse::<std::net::SocketAddr>()?.into())?;
@@ -153,7 +154,7 @@ mod radio {
         inner: Mutex<WfbTx>,
     }
     impl Tx {
-        pub fn new(iface: &str, stream_id: u32) -> anyhow::Result<Self> {
+        pub fn new(iface: &str, stream_id: u32, _port: u16) -> anyhow::Result<Self> {
             let cfg = WfbTxConfig {
                 iface: iface.to_owned(),
                 stream_id,
@@ -174,7 +175,7 @@ mod radio {
         buf: Vec<u8>,
     }
     impl Rx {
-        pub fn new(iface: &str, stream_id: u32) -> anyhow::Result<Self> {
+        pub fn new(iface: &str, stream_id: u32, _port: u16) -> anyhow::Result<Self> {
             let cfg = WfbRxConfig {
                 iface: iface.to_owned(),
                 stream_id,
@@ -205,7 +206,12 @@ pub const MAX_FRAME_BYTES: usize = 1500;
 pub const EPOCH_ROTATION_SECS: u64 = 300;
 pub const OVERLAP_MS: u64 = 1000;
 
-const RX_CHAN_DEPTH: usize = 512;
+// Base UDP port for the four priority streams (Emergency=42800, Critical=42801,
+// High=42802, Bulk=42803).  Each priority gets a dedicated port so that
+// SO_REUSEPORT load-balancing never scatters datagrams across the wrong Rx thread.
+const UDP_BASE_PORT: u16 = 42800;
+
+const RX_CHAN_DEPTH: usize = 2048;
 const RX_POLL_TIMEOUT: Duration = Duration::from_millis(50);
 
 // Byte offset of `src_node` in the application payload delivered by kova-wfb.
@@ -335,9 +341,16 @@ impl LinkAdapter {
         let allow_list = Arc::new(RwLock::new(None::<Vec<u8>>));
 
         // Build TX handles for each priority.
+        // Port = BASE_PORT + priority_index.  Each priority gets a dedicated port so that
+        // SO_REUSEPORT load-balancing never scatters datagrams across the wrong Rx thread.
         let tx_vec: anyhow::Result<Vec<parking_lot::Mutex<radio::Tx>>> = PRIORITIES
             .iter()
-            .map(|&p| radio::Tx::new(iface, derive_stream_id(&session_key, epoch, p)).map(parking_lot::Mutex::new))
+            .enumerate()
+            .map(|(i, &p)| {
+                let sid  = derive_stream_id(&session_key, epoch, p);
+                let port = UDP_BASE_PORT + i as u16;
+                radio::Tx::new(iface, sid, port).map(parking_lot::Mutex::new)
+            })
             .collect();
         let tx: [parking_lot::Mutex<radio::Tx>; 4] = tx_vec?
             .try_into()
@@ -362,7 +375,8 @@ impl LinkAdapter {
         // Spawn one reader thread per priority stream.
         let mut stop_vec: Vec<Arc<AtomicBool>> = Vec::with_capacity(4);
         for (i, &prio) in PRIORITIES.iter().enumerate() {
-            let rx = radio::Rx::new(iface, derive_stream_id(&session_key, epoch, prio))?;
+            let port = UDP_BASE_PORT + i as u16;
+            let rx = radio::Rx::new(iface, derive_stream_id(&session_key, epoch, prio), port)?;
             let stop = Arc::new(AtomicBool::new(false));
             spawn_reader(
                 rx,
@@ -433,9 +447,10 @@ impl LinkAdapter {
 
         for (i, &prio) in PRIORITIES.iter().enumerate() {
             let new_sid = derive_stream_id(&self.session_key, new_epoch, prio);
+            let port = UDP_BASE_PORT + i as u16;
 
             // Replace TX handle immediately.
-            *self.tx[i].lock() = radio::Tx::new(&self.iface, new_sid)?;
+            *self.tx[i].lock() = radio::Tx::new(&self.iface, new_sid, port)?;
 
             // Schedule old reader thread to stop after the overlap window.
             let old_stop = Arc::clone(&self.rx_stops[i]);
@@ -447,7 +462,7 @@ impl LinkAdapter {
             // Start new reader thread on new stream; reuse the same sender so
             // recv() sees frames from both old and new streams transparently.
             let new_stop = Arc::new(AtomicBool::new(false));
-            let new_rx = radio::Rx::new(&self.iface, new_sid)?;
+            let new_rx = radio::Rx::new(&self.iface, new_sid, port)?;
             spawn_reader(
                 new_rx,
                 self.rx_senders[i].clone(),

@@ -13,9 +13,10 @@ use tacticalmesh_link::Priority;
 use tacticalmesh_wire::{build_frame, Identity, MsgKind, TacticalMessage as WireMsg, BROADCAST};
 use tacticalmesh_app::{
     messages::{
-        Bda, BdaResult, RequestImage, StateReport,
+        Bda, BdaResult, ChatMessage, RequestImage, StateReport,
         TacticalMessage as AppMsg, TargetDetection, TargetKind,
     },
+    state::ImageDisplay,
     tui::{Tui, TuiEvent},
 };
 
@@ -57,8 +58,47 @@ pub async fn run(shared: Arc<Shared>, out_tx: mpsc::Sender<OutboundMsg>) -> anyh
         }
 
         if let Some(ev) = tui.next_event()? {
+            let input_mode = shared.app.read().input_mode;
+
+            // ── Input mode: capture keystrokes into the compose buffer ────────
+            if input_mode {
+                match ev {
+                    TuiEvent::Escape => {
+                        let mut app = shared.app.write();
+                        app.input_mode = false;
+                        app.input_buf.clear();
+                    }
+                    TuiEvent::Backspace => {
+                        shared.app.write().input_buf.pop();
+                    }
+                    TuiEvent::Enter => {
+                        let text = {
+                            let mut app = shared.app.write();
+                            app.input_mode = false;
+                            std::mem::take(&mut app.input_buf)
+                        };
+                        if !text.trim().is_empty() {
+                            let msg = AppMsg::Chat(ChatMessage { from: local_id, text: text.clone() });
+                            let _ = out_tx.send(OutboundMsg { app_msg: msg, dst: BROADCAST, prio: Priority::High }).await;
+                            shared.app.write().push_log(format!("[{}] [CHAT] NODE-{local_id}: {text}", hms()));
+                        }
+                    }
+                    TuiEvent::KeyPress(c) => {
+                        shared.app.write().input_buf.push(c);
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(16)).await;
+                continue;
+            }
+
+            // ── Command mode ──────────────────────────────────────────────────
             match ev {
-                TuiEvent::Quit | TuiEvent::KeyPress('q') => break,
+                TuiEvent::Escape | TuiEvent::KeyPress('q') => break,
+
+                // / — enter compose mode
+                TuiEvent::KeyPress('/') => {
+                    shared.app.write().input_mode = true;
+                }
 
                 // t — TargetDetection (CHARLIE role)
                 TuiEvent::KeyPress('t') => {
@@ -92,13 +132,39 @@ pub async fn run(shared: Arc<Shared>, out_tx: mpsc::Sender<OutboundMsg>) -> anyh
 
                 // i — RequestImage for highlighted target
                 TuiEvent::KeyPress('i') => {
-                    let target_id = shared.target_board.read().targets()
-                        .map(|t| t.id)
+                    let (target_id, image_node) = shared.target_board.read().targets()
                         .next()
-                        .unwrap_or(100);
+                        .map(|t| (t.id, t.assigned_to))
+                        .unwrap_or((100, None));
+                    if image_node == Some(local_id) {
+                        let local = shared.local_image.lock().clone();
+                        match local {
+                            Some((pixels, width, height)) => {
+                                let mut app = shared.app.write();
+                                app.image = Some(ImageDisplay { target_id, pixels, width, height });
+                                app.push_log(format!(
+                                    "[KEY i] Local image for target {target_id} loaded ({width}×{height})"
+                                ));
+                            }
+                            None => {
+                                shared.app.write().push_log(format!(
+                                    "[KEY i] No local image for target {target_id}"
+                                ));
+                            }
+                        }
+                        continue;
+                    }
                     let msg = AppMsg::RequestImage(RequestImage { target_id, requester: local_id });
-                    let _ = out_tx.send(OutboundMsg { app_msg: msg, dst: BROADCAST, prio: Priority::Bulk }).await;
-                    shared.app.write().push_log(format!("[KEY i] RequestImage for target {target_id}"));
+                    let dst = image_node.unwrap_or(BROADCAST);
+                    let _ = out_tx.send(OutboundMsg { app_msg: msg, dst, prio: Priority::Bulk }).await;
+                    let dst_label = if dst == BROADCAST {
+                        "broadcast".to_string()
+                    } else {
+                        format!("NODE-{dst}")
+                    };
+                    shared.app.write().push_log(format!(
+                        "[KEY i] RequestImage for target {target_id} to {dst_label}"
+                    ));
                 }
 
                 // s — toggle spoofer (BRAVO role)
@@ -130,6 +196,21 @@ pub async fn run(shared: Arc<Shared>, out_tx: mpsc::Sender<OutboundMsg>) -> anyh
                     } else {
                         shared.link.set_allow_list(None);
                         shared.app.write().push_log("[KEY b] Blackout OFF".to_string());
+                    }
+                }
+
+                // p — preview local image directly (no network hop)
+                TuiEvent::KeyPress('p') => {
+                    let local = shared.local_image.lock().clone();
+                    match local {
+                        Some((pixels, width, height)) => {
+                            let mut app = shared.app.write();
+                            app.image = Some(ImageDisplay { target_id: 0, pixels, width, height });
+                            app.push_log(format!("[KEY p] Local image loaded ({width}×{height})"));
+                        }
+                        None => {
+                            shared.app.write().push_log("[KEY p] No local image available".to_string());
+                        }
                     }
                 }
 
@@ -214,4 +295,9 @@ fn now_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+fn hms() -> String {
+    let secs = now_ms() / 1000;
+    format!("{:02}:{:02}:{:02}", (secs / 3600) % 24, (secs / 60) % 60, secs % 60)
 }

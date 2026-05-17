@@ -11,7 +11,7 @@ wfb  = ["wfb_rs"]
 
 [dependencies]
 blake3      = "1.5"
-socket2     = "0.5"
+socket2     = { version = "0.5", features = ["all"] }
 parking_lot = { workspace = true }
 anyhow      = { workspace = true }
 tracing     = { workspace = true }

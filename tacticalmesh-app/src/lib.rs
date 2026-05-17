@@ -2,6 +2,7 @@ pub mod messages;
 pub mod state;
 pub mod crdt;
 pub mod image_cache;
+pub mod image_codec;
 pub mod mock;
 pub mod demo;
 pub mod tui;
