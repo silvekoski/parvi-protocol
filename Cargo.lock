@@ -1130,6 +1130,7 @@ dependencies = [
  "anyhow",
  "bincode",
  "clap",
+ "crossterm",
  "libc",
  "parking_lot",
  "pcap",

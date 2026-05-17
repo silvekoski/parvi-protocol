@@ -108,11 +108,12 @@ pub async fn rx_loop(
 
         // ── Routing decision ──────────────────────────────────────────────────
         let deliver_local   = dst == local_id || dst == BROADCAST;
-        // Flood broadcast frames with a bounded hop count. This is needed for
-        // target detections and image requests when the requester/provider are
-        // not direct RF neighbors.
+        // Only rebroadcast routing control frames, not Data. Data frames are
+        // already 802.11 broadcast so every direct neighbor hears them; flooding
+        // Data would cause receivers to see the same message multiple times.
         let rebroadcast     = dst == BROADCAST
-            && parsed.routed.hops_taken < MAX_HOPS;
+            && parsed.routed.hops_taken < MAX_HOPS
+            && msg_kind != MsgKind::Data;
         let forward_unicast = dst != local_id && dst != BROADCAST;
 
         if rebroadcast {

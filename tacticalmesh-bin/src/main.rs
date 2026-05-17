@@ -75,6 +75,16 @@ pub struct Shared {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Restore terminal on panic so the shell isn't left in raw mode.
+    std::panic::set_hook(Box::new(|info| {
+        let _ = crossterm::terminal::disable_raw_mode();
+        let _ = crossterm::execute!(
+            std::io::stdout(),
+            crossterm::terminal::LeaveAlternateScreen
+        );
+        eprintln!("PANIC: {info}");
+    }));
+
     tracing_subscriber::fmt::init();
     let cli = Cli::parse();
 
@@ -104,22 +114,39 @@ async fn main() -> anyhow::Result<()> {
     let link = Arc::new(LinkAdapter::new(&cli.iface, cli.node_id, psk)?);
     let scheduler = Arc::new(TxScheduler::new(link.clone()));
 
+    const IMG_MAX_W: u32 = 320;
+    const IMG_MAX_H: u32 = 240;
+
     let local_image: Option<(Vec<u8>, u32, u32)> = if let Some(ref path) = cli.image_file {
         let bytes = std::fs::read(path)?;
         if bytes.len() == 640 * 480 {
             info!("loaded raw 640×480 greyscale image from {:?}", path);
             Some((bytes, 640, 480))
         } else {
-            let (raw, w, h) = tacticalmesh_app::image_codec::decode_jpeg(&bytes)
+            let (raw, w, h) = tacticalmesh_app::image_codec::decode_and_scale(&bytes, IMG_MAX_W, IMG_MAX_H)
                 .ok_or_else(|| anyhow::anyhow!(
-                    "--image-file: not a raw 640×480 greyscale file and not a valid JPEG"
+                    "--image-file: not a raw 640×480 greyscale file and not a valid image"
                 ))?;
-            info!("loaded JPEG {}×{} image from {:?}", w, h, path);
+            info!("loaded image {}×{} (scaled) from {:?}", w, h, path);
             Some((raw, w, h))
         }
     } else {
-        info!("no --image-file provided; using built-in test pattern");
-        Some(generate_test_pattern())
+        let tank = std::path::Path::new("assets/tank.jpg");
+        if tank.exists() {
+            match tacticalmesh_app::image_codec::decode_and_scale(&std::fs::read(tank)?, IMG_MAX_W, IMG_MAX_H) {
+                Some((raw, w, h)) => {
+                    info!("loaded default tank image {}×{}", w, h);
+                    Some((raw, w, h))
+                }
+                None => {
+                    tracing::warn!("failed to decode assets/tank.jpg, using test pattern");
+                    Some(generate_test_pattern())
+                }
+            }
+        } else {
+            info!("no --image-file provided; using built-in test pattern");
+            Some(generate_test_pattern())
+        }
     };
 
     let shared = Arc::new(Shared {

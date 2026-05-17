@@ -18,6 +18,17 @@ pub fn decode_jpeg(bytes: &[u8]) -> Option<(Vec<u8>, u32, u32)> {
     Some((gray.into_raw(), w, h))
 }
 
+/// Decode any image from bytes, scale to fit within `max_w × max_h` (preserving
+/// aspect ratio), and return raw luma8 pixels + final dimensions.
+pub fn decode_and_scale(bytes: &[u8], max_w: u32, max_h: u32) -> Option<(Vec<u8>, u32, u32)> {
+    let img = image::load_from_memory(bytes).ok()?;
+    let img = img.thumbnail(max_w, max_h);
+    let gray = img.into_luma8();
+    let w = gray.width();
+    let h = gray.height();
+    Some((gray.into_raw(), w, h))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
